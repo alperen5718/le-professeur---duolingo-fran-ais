@@ -1,0 +1,7 @@
+{
+  "name": "Le Professeur - French Tutor",
+  "description": "An interactive, gamified French learning application powered by Gemini. Features AI-generated lessons, pronunciation feedback, and voice interaction.",
+  "requestFramePermissions": [
+    "microphone"
+  ]
+}
