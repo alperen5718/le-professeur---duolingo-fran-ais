@@ -5,7 +5,7 @@ import { Vocabulary } from '../types';
 interface WordRainGameProps {
   vocabulary: Vocabulary[];
   onExit: () => void;
-  onComplete: (xp: number) => void;
+  onComplete: (xp: number, newWords: Vocabulary[]) => void;
 }
 
 interface FallingWord {
@@ -16,6 +16,8 @@ interface FallingWord {
   y: number;
   speed: number;
   color: string;
+  isNew: boolean; // Is this a word not yet in user's memory?
+  originalVocab: Vocabulary;
 }
 
 interface Particle {
@@ -42,13 +44,16 @@ const WordRainGame: React.FC<WordRainGameProps> = ({ vocabulary, onExit, onCompl
   const gameState = useRef({
     words: [] as FallingWord[],
     particles: [] as Particle[],
+    sessionLearnedWords: [] as Vocabulary[], // Track words learned in this session
+    recentHistory: [] as string[], // Track recently spawned words to prevent repeats
     lastSpawnTime: 0,
-    spawnRate: 2000, // ms
+    spawnRate: 3000, // Slower start (was 2500)
     score: 0,
     lives: 3,
     isPlaying: true,
     animationFrameId: 0,
-    vocabList: vocabulary.length > 5 ? vocabulary : FALLBACK_VOCAB
+    // Combine user vocab with fallback, prioritize user vocab but mix in new ones if needed
+    vocabList: vocabulary.length > 20 ? vocabulary : [...vocabulary, ...FALLBACK_VOCAB]
   });
 
   // Normalize text helper (remove accents, punctuation)
@@ -61,22 +66,53 @@ const WordRainGame: React.FC<WordRainGameProps> = ({ vocabulary, onExit, onCompl
   };
 
   const spawnWord = (width: number) => {
-    const { vocabList } = gameState.current;
-    const randomVocab = vocabList[Math.floor(Math.random() * vocabList.length)];
+    const { vocabList, words, recentHistory } = gameState.current;
     
+    // Filter candidates:
+    // 1. Must not be currently falling on screen
+    // 2. Must not be in recent history (last 15 words)
+    let candidates = vocabList.filter(v => 
+        !words.some(w => w.textFr === v.fr) && 
+        !recentHistory.includes(v.fr)
+    );
+
+    // If we run out of candidates (rare), clear history and fallback to full list
+    if (candidates.length === 0) {
+        gameState.current.recentHistory = [];
+        candidates = vocabList.filter(v => !words.some(w => w.textFr === v.fr));
+        // If still empty (screen full), abort spawn
+        if (candidates.length === 0) return;
+    }
+
+    const randomVocab = candidates[Math.floor(Math.random() * candidates.length)];
+    
+    // Update history
+    gameState.current.recentHistory.push(randomVocab.fr);
+    if (gameState.current.recentHistory.length > 20) {
+        gameState.current.recentHistory.shift();
+    }
+
+    // Determine if this is a "new" word (from fallback) or existing
+    const isKnown = vocabulary.some(v => v.fr === randomVocab.fr);
+
     // Ensure text fits within canvas width (padding 20px)
-    const x = Math.random() * (width - 100) + 20;
+    const x = Math.random() * (width - 150) + 20;
     
-    const baseSpeed = 0.5 + (gameState.current.score / 500); // Increase speed with score
+    // SPEED ADJUSTMENT: Much slower base speed
+    // Old: 0.3 + score/1000
+    // New: 0.15 + score/2000 (Very floaty start)
+    const baseSpeed = 0.15 + (gameState.current.score / 2000); 
     
     const word: FallingWord = {
       id: Date.now() + Math.random(),
       textFr: randomVocab.fr,
       textTr: randomVocab.tr,
       x: x,
-      y: -30,
-      speed: baseSpeed + Math.random() * 0.5,
-      color: '#ffffff'
+      y: -50, // Start higher up
+      speed: baseSpeed + Math.random() * 0.2, // Less variance
+      color: isKnown ? '#ffffff' : '#fbbf24', // Gold color for new words
+      isNew: !isKnown,
+      originalVocab: randomVocab
     };
     
     gameState.current.words.push(word);
@@ -105,6 +141,15 @@ const WordRainGame: React.FC<WordRainGameProps> = ({ vocabulary, onExit, onCompl
       // Correct Match
       const word = gameState.current.words[matchIndex];
       
+      // Track learned word if it was new/unknown
+      if (word.isNew) {
+          // Avoid duplicates in session list
+          const alreadyTracked = gameState.current.sessionLearnedWords.some(w => w.fr === word.originalVocab.fr);
+          if (!alreadyTracked) {
+              gameState.current.sessionLearnedWords.push(word.originalVocab);
+          }
+      }
+      
       // Update Score
       gameState.current.score += 10;
       setScore(gameState.current.score);
@@ -126,7 +171,9 @@ const WordRainGame: React.FC<WordRainGameProps> = ({ vocabulary, onExit, onCompl
       
       // Clear input
       setInputValue('');
-      gameState.current.spawnRate = Math.max(500, 2000 - (gameState.current.score * 2));
+      
+      // Adjust spawn rate - caps at 800ms (slower cap)
+      gameState.current.spawnRate = Math.max(800, 3000 - (gameState.current.score * 1.5));
       
       return true;
     }
@@ -242,7 +289,8 @@ const WordRainGame: React.FC<WordRainGameProps> = ({ vocabulary, onExit, onCompl
   const handleGameOverExit = () => {
       // Award partial XP based on score
       const xpAwarded = Math.floor(score / 10);
-      onComplete(xpAwarded);
+      // Pass newly learned words back to App
+      onComplete(xpAwarded, gameState.current.sessionLearnedWords);
       onExit();
   };
 
@@ -319,8 +367,16 @@ const WordRainGame: React.FC<WordRainGameProps> = ({ vocabulary, onExit, onCompl
               <div className="bg-white p-8 rounded-3xl shadow-2xl text-center max-w-sm w-full animate-pop-in border-4 border-indigo-500">
                   <Trophy size={64} className="mx-auto text-yellow-400 mb-4" />
                   <h2 className="text-3xl font-extrabold text-gray-900 mb-2">Oyun Bitti!</h2>
-                  <p className="text-gray-500 mb-6">Kelimeler seni yendi.</p>
+                  <p className="text-gray-500 mb-4">Kelimeler seni yendi.</p>
                   
+                  {gameState.current.sessionLearnedWords.length > 0 && (
+                      <div className="mb-4 p-2 bg-green-50 rounded-lg border border-green-100">
+                          <p className="text-green-700 font-bold text-sm">
+                              +{gameState.current.sessionLearnedWords.length} Yeni Kelime Belleğe Eklendi!
+                          </p>
+                      </div>
+                  )}
+
                   <div className="bg-indigo-50 p-4 rounded-xl mb-6">
                       <p className="text-sm text-gray-500 uppercase font-bold">Toplam Skor</p>
                       <p className="text-4xl font-black text-indigo-600">{score}</p>
@@ -339,7 +395,7 @@ const WordRainGame: React.FC<WordRainGameProps> = ({ vocabulary, onExit, onCompl
   );
 };
 
-// Fallback data if user has no learned words yet
+// Expanded Fallback Vocab - A1/A2 Level (60 Words)
 const FALLBACK_VOCAB: Vocabulary[] = [
     { fr: "bonjour", tr: "merhaba", pos: "int", audio_tts: "" },
     { fr: "chat", tr: "kedi", pos: "noun", audio_tts: "" },
@@ -352,7 +408,55 @@ const FALLBACK_VOCAB: Vocabulary[] = [
     { fr: "ami", tr: "arkadaş", pos: "noun", audio_tts: "" },
     { fr: "oui", tr: "evet", pos: "int", audio_tts: "" },
     { fr: "non", tr: "hayır", pos: "int", audio_tts: "" },
-    { fr: "amour", tr: "aşk", pos: "noun", audio_tts: "" }
+    { fr: "amour", tr: "aşk", pos: "noun", audio_tts: "" },
+    { fr: "merci", tr: "teşekkürler", pos: "int", audio_tts: "" },
+    { fr: "nuit", tr: "gece", pos: "noun", audio_tts: "" },
+    { fr: "jour", tr: "gün", pos: "noun", audio_tts: "" },
+    { fr: "homme", tr: "adam", pos: "noun", audio_tts: "" },
+    { fr: "femme", tr: "kadın", pos: "noun", audio_tts: "" },
+    { fr: "enfant", tr: "çocuk", pos: "noun", audio_tts: "" },
+    { fr: "manger", tr: "yemek", pos: "verb", audio_tts: "" },
+    { fr: "boire", tr: "içmek", pos: "verb", audio_tts: "" },
+    { fr: "livre", tr: "kitap", pos: "noun", audio_tts: "" },
+    { fr: "voiture", tr: "araba", pos: "noun", audio_tts: "" },
+    { fr: "porte", tr: "kapı", pos: "noun", audio_tts: "" },
+    { fr: "fenêtre", tr: "pencere", pos: "noun", audio_tts: "" },
+    { fr: "noir", tr: "siyah", pos: "adj", audio_tts: "" },
+    { fr: "blanc", tr: "beyaz", pos: "adj", audio_tts: "" },
+    { fr: "soleil", tr: "güneş", pos: "noun", audio_tts: "" },
+    { fr: "lune", tr: "ay", pos: "noun", audio_tts: "" },
+    { fr: "un", tr: "bir", pos: "num", audio_tts: "" },
+    { fr: "deux", tr: "iki", pos: "num", audio_tts: "" },
+    { fr: "trois", tr: "üç", pos: "num", audio_tts: "" },
+    { fr: "père", tr: "baba", pos: "noun", audio_tts: "" },
+    { fr: "mère", tr: "anne", pos: "noun", audio_tts: "" },
+    { fr: "frère", tr: "erkek kardeş", pos: "noun", audio_tts: "" },
+    { fr: "soeur", tr: "kız kardeş", pos: "noun", audio_tts: "" },
+    { fr: "pomme", tr: "elma", pos: "noun", audio_tts: "" },
+    { fr: "lait", tr: "süt", pos: "noun", audio_tts: "" },
+    { fr: "café", tr: "kahve", pos: "noun", audio_tts: "" },
+    { fr: "table", tr: "masa", pos: "noun", audio_tts: "" },
+    { fr: "chaise", tr: "sandalye", pos: "noun", audio_tts: "" },
+    { fr: "lit", tr: "yatak", pos: "noun", audio_tts: "" },
+    { fr: "grand", tr: "büyük", pos: "adj", audio_tts: "" },
+    { fr: "petit", tr: "küçük", pos: "adj", audio_tts: "" },
+    { fr: "bon", tr: "iyi", pos: "adj", audio_tts: "" },
+    { fr: "mauvais", tr: "kötü", pos: "adj", audio_tts: "" },
+    { fr: "aller", tr: "gitmek", pos: "verb", audio_tts: "" },
+    { fr: "voir", tr: "görmek", pos: "verb", audio_tts: "" },
+    { fr: "faire", tr: "yapmak", pos: "verb", audio_tts: "" },
+    { fr: "aimer", tr: "sevmek", pos: "verb", audio_tts: "" },
+    { fr: "école", tr: "okul", pos: "noun", audio_tts: "" },
+    { fr: "ville", tr: "şehir", pos: "noun", audio_tts: "" },
+    { fr: "rue", tr: "sokak", pos: "noun", audio_tts: "" },
+    { fr: "sac", tr: "çanta", pos: "noun", audio_tts: "" },
+    { fr: "argent", tr: "para", pos: "noun", audio_tts: "" },
+    { fr: "stylo", tr: "kalem", pos: "noun", audio_tts: "" },
+    { fr: "heure", tr: "saat", pos: "noun", audio_tts: "" },
+    { fr: "temps", tr: "zaman", pos: "noun", audio_tts: "" },
+    { fr: "année", tr: "yıl", pos: "noun", audio_tts: "" },
+    { fr: "garçon", tr: "oğlan", pos: "noun", audio_tts: "" },
+    { fr: "fille", tr: "kız", pos: "noun", audio_tts: "" }
 ];
 
 export default WordRainGame;

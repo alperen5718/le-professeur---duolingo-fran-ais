@@ -90,6 +90,9 @@ export interface Lesson {
 }
 
 export interface UserState {
+  username?: string; // New: store username
+  isAuthenticated: boolean; // New: track login status
+  themePreference: 'light' | 'dark'; // New: Dark Mode
   xp: number;
   streak: number;
   level: Level;
